@@ -1,6 +1,11 @@
 data "azurerm_subscription" "current" {}
 data "azurerm_client_config" "current" {}
 
+# The custom role needs a stable id at bootstrap time so the ABAC condition
+# below can name it. Generating it here and passing it to infra is what lets
+# the deploy identity be constrained to exactly three roles.
+resource "random_uuid" "custom_role" {}
+
 resource "random_string" "state" {
   length  = 6
   lower   = true
@@ -128,10 +133,42 @@ resource "azurerm_role_assignment" "deployer_lab" {
   principal_id         = azuread_service_principal.deployer.object_id
 }
 
+# User Access Administrator would let this identity assign any role at the
+# scope, including Owner to itself. The lab checks for exactly that, and its
+# own deploy identity should not be the exception.
+#
+# Role Based Access Control Administrator with an ABAC condition can assign
+# only the three roles this lab uses: Reader, Contributor, and the custom
+# Restart Only role. The condition is what makes this delegation rather than
+# self-promotion, and the escalation analysis grades it Info rather than
+# Critical for precisely that reason.
 resource "azurerm_role_assignment" "deployer_rbac" {
   scope                = azurerm_resource_group.lab.id
-  role_definition_name = "User Access Administrator"
+  role_definition_name = "Role Based Access Control Administrator"
   principal_id         = azuread_service_principal.deployer.object_id
+
+  condition_version = "2.0"
+  condition         = <<-COND
+    (
+      (
+        !(ActionMatches{'Microsoft.Authorization/roleAssignments/write'})
+      )
+      OR
+      (
+        @Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals{acdd72a7-3385-48ef-bd42-f606fba81ae7, b24988ac-6180-42a0-ab88-20f7382dd24c, ${random_uuid.custom_role.result}}
+      )
+    )
+    AND
+    (
+      (
+        !(ActionMatches{'Microsoft.Authorization/roleAssignments/delete'})
+      )
+      OR
+      (
+        @Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals{acdd72a7-3385-48ef-bd42-f606fba81ae7, b24988ac-6180-42a0-ab88-20f7382dd24c, ${random_uuid.custom_role.result}}
+      )
+    )
+  COND
 }
 
 resource "azurerm_role_assignment" "deployer_state" {

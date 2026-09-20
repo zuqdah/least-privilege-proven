@@ -68,6 +68,8 @@ jobs:
           terraform plan -input=false -lock-timeout=5m
           -var="resource_group_name=${{ vars.LAB_RESOURCE_GROUP }}"
           -var='subject_object_ids=${{ vars.SUBJECT_OBJECT_IDS }}'
+          -var="custom_role_definition_id=${{ vars.CUSTOM_ROLE_ID }}"
+          -var="deployer_object_id=${{ vars.DEPLOYER_OBJECT_ID }}"
 
       - name: Apply
         if: ${{ inputs.apply }}
@@ -76,6 +78,8 @@ jobs:
           terraform apply -input=false -auto-approve -lock-timeout=5m
           -var="resource_group_name=${{ vars.LAB_RESOURCE_GROUP }}"
           -var='subject_object_ids=${{ vars.SUBJECT_OBJECT_IDS }}'
+          -var="custom_role_definition_id=${{ vars.CUSTOM_ROLE_ID }}"
+          -var="deployer_object_id=${{ vars.DEPLOYER_OBJECT_ID }}"
 
       - name: Collect outputs
         if: ${{ inputs.apply }}
@@ -105,9 +109,11 @@ jobs:
         run: |
           $scope = '${{ steps.tf.outputs.rgid }}'
           foreach ($attempt in 1..20) {
-            $live = az role assignment list --scope $scope --include-inherited false --only-show-errors | ConvertFrom-Json
-            if (@($live).Count -ge 3) {
-              Write-Host "All three assignments visible after $($attempt * 15)s or less"
+            # -g rather than --scope: az 2.90 rejects a resource-group scope
+            # on this command with MissingSubscription.
+            $live = az role assignment list --resource-group '${{ steps.tf.outputs.rg }}' --only-show-errors | ConvertFrom-Json
+            if (@($live).Count -ge 5) {
+              Write-Host "All five assignments visible after $($attempt * 15)s or less"
               # Visible is not the same as enforced; give the data plane a moment.
               Start-Sleep -Seconds 30
               exit 0
@@ -126,6 +132,7 @@ jobs:
         run: |
           ./scripts/Invoke-RbacAnalysis.ps1 `
             -Scope '${{ steps.tf.outputs.rgid }}' `
+            -ResourceGroup '${{ steps.tf.outputs.rg }}' `
             -DeclaredAssignments '${{ steps.tf.outputs.declared }}' `
             -OutFile out/rbac-analysis.json `
             -FailOnDrift

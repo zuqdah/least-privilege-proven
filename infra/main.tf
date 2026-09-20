@@ -68,9 +68,12 @@ resource "azurerm_storage_account" "target" {
 # ---------------------------------------------------------------------------
 
 resource "azurerm_role_definition" "restart_only" {
-  name        = "Restart Only (${local.name})"
-  scope       = data.azurerm_resource_group.lab.id
-  description = "Read everything in the group and restart compute. No create, no delete, no keys, no access changes."
+  # Pinned rather than generated, so the deploy identity's ABAC condition can
+  # name this role before it exists.
+  role_definition_id = var.custom_role_definition_id
+  name               = "Restart Only (${local.name})"
+  scope              = data.azurerm_resource_group.lab.id
+  description        = "Read everything in the group and restart compute. No create, no delete, no keys, no access changes."
 
   permissions {
     actions = [

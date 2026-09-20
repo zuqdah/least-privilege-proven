@@ -35,3 +35,12 @@ output "subject_object_ids" {
   description = "Set as SUBJECT_OBJECT_IDS. infra assigns roles to these."
   value       = jsonencode({ for k, v in azuread_service_principal.subject : k => v.object_id })
 }
+output "custom_role_definition_id" {
+  description = "Set as CUSTOM_ROLE_ID. Pinned here so the deploy identity can be constrained to assigning only this role and two built-ins."
+  value       = random_uuid.custom_role.result
+}
+
+output "deployer_object_id" {
+  description = "Set as DEPLOYER_OBJECT_ID. infra declares this identity's own assignments so they are not reported as drift."
+  value       = azuread_service_principal.deployer.object_id
+}

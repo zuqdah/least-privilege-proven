@@ -36,5 +36,18 @@ output "declared_assignments" {
       RoleName    = "Contributor"
       Scope       = data.azurerm_resource_group.lab.id
     },
+    # The deploy identity's own grants, made in bootstrap. They are declared
+    # in source control just as much as the others, so leaving them out here
+    # would report the pipeline itself as drift on every run.
+    {
+      PrincipalId = var.deployer_object_id
+      RoleName    = "Contributor"
+      Scope       = data.azurerm_resource_group.lab.id
+    },
+    {
+      PrincipalId = var.deployer_object_id
+      RoleName    = "Role Based Access Control Administrator"
+      Scope       = data.azurerm_resource_group.lab.id
+    },
   ])
 }

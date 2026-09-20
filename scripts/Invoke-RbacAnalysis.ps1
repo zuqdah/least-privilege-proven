@@ -24,6 +24,7 @@
     Justification = 'Operator-facing analysis report; the output is the product.')]
 param(
     [Parameter(Mandatory)][string]$Scope,
+    [Parameter(Mandatory)][string]$ResourceGroup,
     [Parameter(Mandatory)][string]$DeclaredAssignments,
     [string]$OutFile,
     [switch]$FailOnDrift
@@ -36,11 +37,14 @@ Import-Module (Join-Path -Path (Join-Path -Path $root -ChildPath 'module') -Chil
 
 Write-Host "Reading role assignments at $Scope"
 
-# Assignments inherited from the subscription are visible at this scope but
-# are not this scope's to manage, so only assignments made here are compared.
-# Including inherited ones would report the subscription owner as drift on
-# every run, which is how a drift report gets ignored.
-$live = az role assignment list --scope $Scope --include-inherited false --only-show-errors |
+# Listed by resource group rather than by --scope: az 2.90 rejects an
+# resource-group scope on this command with MissingSubscription, while the
+# -g form returns exactly the assignments made at that group.
+#
+# Inherited assignments are excluded by default here. Including them would
+# report the subscription owner as drift on every run, which is how a drift
+# report gets ignored.
+$live = az role assignment list --resource-group $ResourceGroup --only-show-errors |
     ConvertFrom-Json
 
 $definitionCache = @{}
@@ -48,7 +52,9 @@ function Resolve-Definition {
     param([string]$Name)
     if ($definitionCache.ContainsKey($Name)) { return $definitionCache[$Name] }
 
-    $raw = az role definition list --name $Name --scope $Scope --only-show-errors | ConvertFrom-Json
+    # Custom roles are only visible at their assignable scope, so try there
+    # first and fall back to the built-in catalogue.
+    $raw = az role definition list --name $Name --scope $Scope --only-show-errors 2>$null | ConvertFrom-Json
     if (-not $raw) { $raw = az role definition list --name $Name --only-show-errors | ConvertFrom-Json }
 
     $definition = if ($raw) {
