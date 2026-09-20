@@ -69,7 +69,8 @@ jobs:
           terraform destroy -input=false -auto-approve -lock-timeout=5m
           -var="resource_group_name=${{ vars.LAB_RESOURCE_GROUP }}"
           -var='subject_object_ids=${{ vars.SUBJECT_OBJECT_IDS }}'
-          -var="custom_role_definition_id=${{ vars.CUSTOM_ROLE_ID }}"
+          -var="custom_role_resource_id=${{ vars.CUSTOM_ROLE_RESOURCE_ID }}"
+          -var="custom_role_name=${{ vars.CUSTOM_ROLE_NAME }}"
           -var="deployer_object_id=${{ vars.DEPLOYER_OBJECT_ID }}"
 
       # A probe credential outliving the run is the one failure here that

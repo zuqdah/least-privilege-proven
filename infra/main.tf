@@ -59,44 +59,6 @@ resource "azurerm_storage_account" "target" {
 }
 
 # ---------------------------------------------------------------------------
-# A custom role that says what it means.
-#
-# The built-in roles are either too wide or too narrow for an operator who
-# should be able to restart a thing without being able to delete it. Writing
-# the role explicitly is the only way the boundary is reviewable, and the
-# proof then checks that the boundary is real.
-# ---------------------------------------------------------------------------
-
-resource "azurerm_role_definition" "restart_only" {
-  # Pinned rather than generated, so the deploy identity's ABAC condition can
-  # name this role before it exists.
-  role_definition_id = var.custom_role_definition_id
-  name               = "Restart Only (${local.name})"
-  scope              = data.azurerm_resource_group.lab.id
-  description        = "Read everything in the group and restart compute. No create, no delete, no keys, no access changes."
-
-  permissions {
-    actions = [
-      "Microsoft.Resources/subscriptions/resourceGroups/read",
-      "Microsoft.Storage/storageAccounts/read",
-      "Microsoft.Compute/virtualMachines/read",
-      "Microsoft.Compute/virtualMachines/restart/action",
-      "Microsoft.Web/sites/read",
-      "Microsoft.Web/sites/restart/action",
-    ]
-
-    # Stated even though the actions above do not grant them. A future edit
-    # that widens actions should not silently pick these up.
-    not_actions = [
-      "Microsoft.Storage/storageAccounts/listKeys/action",
-      "Microsoft.Authorization/roleAssignments/write",
-    ]
-  }
-
-  assignable_scopes = [data.azurerm_resource_group.lab.id]
-}
-
-# ---------------------------------------------------------------------------
 # The assignments under test
 # ---------------------------------------------------------------------------
 
@@ -108,7 +70,7 @@ resource "azurerm_role_assignment" "reader" {
 
 resource "azurerm_role_assignment" "operator" {
   scope              = data.azurerm_resource_group.lab.id
-  role_definition_id = azurerm_role_definition.restart_only.role_definition_resource_id
+  role_definition_id = var.custom_role_resource_id
   principal_id       = var.subject_object_ids["operator"]
 }
 

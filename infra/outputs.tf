@@ -12,7 +12,7 @@ output "storage_account_name" {
 }
 
 output "custom_role_name" {
-  value = azurerm_role_definition.restart_only.name
+  value = var.custom_role_name
 }
 
 output "subscription_id" {
@@ -28,7 +28,7 @@ output "declared_assignments" {
     },
     {
       PrincipalId = var.subject_object_ids["operator"]
-      RoleName    = azurerm_role_definition.restart_only.name
+      RoleName    = var.custom_role_name
       Scope       = data.azurerm_resource_group.lab.id
     },
     {

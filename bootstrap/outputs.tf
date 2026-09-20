@@ -44,3 +44,12 @@ output "deployer_object_id" {
   description = "Set as DEPLOYER_OBJECT_ID. infra declares this identity's own assignments so they are not reported as drift."
   value       = azuread_service_principal.deployer.object_id
 }
+output "custom_role_resource_id" {
+  description = "Set as CUSTOM_ROLE_RESOURCE_ID. infra assigns this role but does not define it."
+  value       = azurerm_role_definition.restart_only.role_definition_resource_id
+}
+
+output "custom_role_name" {
+  description = "Set as CUSTOM_ROLE_NAME. Used for drift comparison, which matches on role name."
+  value       = azurerm_role_definition.restart_only.name
+}

@@ -19,8 +19,13 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
-variable "custom_role_definition_id" {
-  description = "Pinned UUID for the custom role. Bootstrap generates it so the deploy identity can be constrained to assigning only this role."
+variable "custom_role_resource_id" {
+  description = "ARM id of the custom role. Defined in bootstrap because a constrained deploy identity cannot write role definitions."
+  type        = string
+}
+
+variable "custom_role_name" {
+  description = "Name of the custom role, used for drift comparison."
   type        = string
 }
 

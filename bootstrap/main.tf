@@ -182,3 +182,39 @@ resource "azurerm_role_assignment" "operator_state" {
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = data.azurerm_client_config.current.object_id
 }
+# ---------------------------------------------------------------------------
+# The custom role lives here, not in infra.
+#
+# Role Based Access Control Administrator grants roleAssignments/write but not
+# roleDefinitions/write, so the constrained deploy identity cannot create a
+# role definition. Widening it back to User Access Administrator would undo
+# the whole point. A role definition is a stable, reviewed artifact anyway:
+# what changes per deployment is who holds it, and that is what infra manages.
+# ---------------------------------------------------------------------------
+
+resource "azurerm_role_definition" "restart_only" {
+  role_definition_id = random_uuid.custom_role.result
+  name               = "Restart Only"
+  scope              = azurerm_resource_group.lab.id
+  description        = "Read everything in the group and restart compute. No create, no delete, no keys, no access changes."
+
+  permissions {
+    actions = [
+      "Microsoft.Resources/subscriptions/resourceGroups/read",
+      "Microsoft.Storage/storageAccounts/read",
+      "Microsoft.Compute/virtualMachines/read",
+      "Microsoft.Compute/virtualMachines/restart/action",
+      "Microsoft.Web/sites/read",
+      "Microsoft.Web/sites/restart/action",
+    ]
+
+    # Stated even though the actions above do not grant them, so a later edit
+    # that widens actions cannot silently pick these up.
+    not_actions = [
+      "Microsoft.Storage/storageAccounts/listKeys/action",
+      "Microsoft.Authorization/roleAssignments/write",
+    ]
+  }
+
+  assignable_scopes = [azurerm_resource_group.lab.id]
+}
