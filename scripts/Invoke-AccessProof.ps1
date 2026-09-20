@@ -110,22 +110,40 @@ foreach ($principal in $principals) {
         # Short-lived and append-only: an existing credential on the
         # application is not disturbed, and this one is removed below.
         $end = [DateTime]::UtcNow.AddHours(2).ToString('yyyy-MM-ddTHH:mm:ssZ')
-        $credential = az ad app credential reset --id $clientId --append `
-            --display-name "proof-$PID" --end-date $end --only-show-errors | ConvertFrom-Json
+        $resetRaw = az ad app credential reset --id $clientId --append `
+            --display-name "proof-$PID" --end-date $end --only-show-errors 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not mint a credential for ${principal}: $($resetRaw -join ' ')"
+        }
+        $credential = $resetRaw | ConvertFrom-Json
+        if (-not $credential.password) {
+            throw "Credential reset for $principal returned no password."
+        }
         $keyId = $credential.keyId
 
         $objectId = az ad sp show --id $clientId --query id -o tsv --only-show-errors
 
-        # A freshly minted secret is not always usable on the first attempt.
+        # A freshly minted secret is not always usable immediately; Entra can
+        # take a couple of minutes to replicate it. The last error is kept so
+        # a real failure is distinguishable from a slow one, because a retry
+        # loop that hides why it is retrying is no help at all.
         $signedIn = $false
-        foreach ($attempt in 1..10) {
+        $lastError = ''
+        foreach ($attempt in 1..20) {
             $env:AZURE_CONFIG_DIR = $configDir
-            az login --service-principal -u $clientId -p $credential.password `
-                --tenant $TenantId --allow-no-subscriptions --only-show-errors *> $null
-            if ($LASTEXITCODE -eq 0) { $signedIn = $true; break }
-            Start-Sleep -Seconds 6
+            $loginOut = az login --service-principal -u $clientId -p $credential.password `
+                --tenant $TenantId --allow-no-subscriptions --only-show-errors 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                $signedIn = $true
+                if ($attempt -gt 1) { Write-Host "  signed in on attempt $attempt" }
+                break
+            }
+            $lastError = ($loginOut | Out-String).Trim()
+            Start-Sleep -Seconds 10
         }
-        if (-not $signedIn) { throw "Could not sign in as $principal after 10 attempts." }
+        if (-not $signedIn) {
+            throw "Could not sign in as $principal after 20 attempts over ~200s. Last error: $lastError"
+        }
 
         az account set --subscription $SubscriptionId --only-show-errors *> $null
 
