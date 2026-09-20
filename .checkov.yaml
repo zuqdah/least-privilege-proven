@@ -1,0 +1,17 @@
+directory:
+  - .
+quiet: true
+compact: true
+skip-check:
+  # The workflow_dispatch inputs are the safety mechanism: Prove will not
+  # touch Azure unless apply is set, and Destroy refuses unless the operator
+  # types "destroy".
+  - CKV_GHA_7
+  # A customer-managed key would outlive the resources it protects in a lab
+  # destroyed after every run.
+  - CKV2_AZURE_1
+  # Blob read logging would cost more than the state it records. Graph check,
+  # so it cannot be skipped inline.
+  - CKV2_AZURE_21
+  # Table logging, same reasoning.
+  - CKV2_AZURE_20

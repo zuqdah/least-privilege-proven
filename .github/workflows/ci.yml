@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_VERSION: "1.16.3"
+
+jobs:
+  powershell:
+    name: Analyze and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install tooling
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck
+          Install-Module PSScriptAnalyzer -MinimumVersion 1.22.0 -Force
+          Import-Module PSScriptAnalyzer -ErrorAction Stop
+
+      - name: Analyze
+        shell: pwsh
+        run: |
+          # -Path takes one string, so each tree is analyzed on its own pass.
+          # -ErrorAction Stop matters: PSScriptAnalyzer occasionally throws a
+          # NullReferenceException part way through a recursive scan, and
+          # without this the run keeps going and reports zero findings from a
+          # scan that never completed. A crashed analyzer must fail the build,
+          # not pass it.
+          $results = @()
+          foreach ($tree in 'module', 'scripts') {
+            $results += Invoke-ScriptAnalyzer -Path $tree -Recurse -ErrorAction Stop
+          }
+          # A test fixture declares parameters it never reads, so that one
+          # rule is excluded for the test tree only.
+          $results += Invoke-ScriptAnalyzer -Path tests -Recurse -ExcludeRule PSReviewUnusedParameter -ErrorAction Stop
+          if ($results.Count) {
+            $results | Format-Table -AutoSize RuleName, Severity, ScriptName, Line, Message |
+              Out-String -Width 200 | Write-Host
+            throw "PSScriptAnalyzer reported $($results.Count) issue(s)."
+          }
+          Write-Host 'PSScriptAnalyzer is clean.'
+
+      # The judgements about whether access is safe are testable without a
+      # subscription. If these ever need Azure to run, that separation is gone.
+      - name: Test
+        shell: pwsh
+        run: |
+          Import-Module Pester -MinimumVersion 5.5.0
+          $config = New-PesterConfiguration
+          $config.Run.Path = 'tests'
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          $config.TestResult.Enabled = $true
+          $config.TestResult.OutputPath = 'testResults.xml'
+          Invoke-Pester -Configuration $config
+
+      # The access matrix is the policy. A probe without a stated reason is a
+      # rule nobody can review, and a matrix with no denials proves nothing.
+      - name: Validate the access matrix
+        shell: pwsh
+        run: |
+          $matrix = [System.IO.File]::ReadAllText('access-matrix.json') | ConvertFrom-Json
+          $probes = @($matrix.probes)
+          if (-not $probes.Count) { throw 'The access matrix is empty.' }
+
+          $missingWhy = @($probes | Where-Object { -not $_.why })
+          if ($missingWhy.Count) {
+            throw "$($missingWhy.Count) probe(s) have no stated reason."
+          }
+
+          $denials = @($probes | Where-Object { -not $_.allowed })
+          if ($denials.Count -eq 0) {
+            throw 'The matrix asserts no denials, so it proves nothing about least privilege.'
+          }
+
+          # Every identity must be told no about something, or it is not
+          # being constrained at all.
+          foreach ($principal in ($probes | ForEach-Object { $_.principal } | Sort-Object -Unique)) {
+            $theirDenials = @($probes | Where-Object { $_.principal -eq $principal -and -not $_.allowed })
+            if ($theirDenials.Count -eq 0) {
+              throw "Identity '$principal' is never denied anything."
+            }
+          }
+
+          Write-Host "$($probes.Count) probes, $($denials.Count) asserted denials, every one with a reason."
+          "### Access policy"                                                        | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          ""                                                                          | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "**$($probes.Count)** probes across **$(($probes | ForEach-Object { $_.principal } | Sort-Object -Unique).Count)** identities, asserting **$($denials.Count)** denials." |
+            Out-File $env:GITHUB_STEP_SUMMARY -Append
+
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: test-results
+          path: testResults.xml
+          if-no-files-found: warn
+
+  terraform:
+    name: Terraform format, validate, lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Format
+        run: terraform fmt -check -recursive
+
+      - name: Validate
+        run: |
+          for dir in bootstrap infra; do
+            terraform -chdir="$dir" init -backend=false -input=false
+            terraform -chdir="$dir" validate
+          done
+
+      - uses: terraform-linters/setup-tflint@v6
+
+      - name: Lint
+        run: |
+          tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
+          tflint --recursive --config "$GITHUB_WORKSPACE/.tflint.hcl"
+
+  security:
+    name: Checkov policy scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: bridgecrewio/checkov-action@v12
+        with:
+          config_file: .checkov.yaml

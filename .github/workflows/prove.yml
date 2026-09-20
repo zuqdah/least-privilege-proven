@@ -1,0 +1,197 @@
+name: Prove
+
+# Manual only. Nothing here spends money or mints a credential on a push.
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Provision Azure and run the proof. Leave false to plan only.
+        type: boolean
+        default: false
+
+concurrency:
+  group: lpp-infra
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_VERSION: "1.16.3"
+
+jobs:
+  prove:
+    name: Prove least privilege holds
+    runs-on: ubuntu-latest
+    environment: lab
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Mask identifiers
+        run: |
+          echo "::add-mask::$ARM_CLIENT_ID"
+          echo "::add-mask::$ARM_TENANT_ID"
+          echo "::add-mask::$ARM_SUBSCRIPTION_ID"
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Init
+        working-directory: infra
+        run: >-
+          terraform init -input=false
+          -backend-config="resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP }}"
+          -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}"
+          -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}"
+          -backend-config="key=infra.tfstate"
+
+      - name: Plan
+        working-directory: infra
+        run: >-
+          terraform plan -input=false -lock-timeout=5m
+          -var="resource_group_name=${{ vars.LAB_RESOURCE_GROUP }}"
+          -var='subject_object_ids=${{ vars.SUBJECT_OBJECT_IDS }}'
+
+      - name: Apply
+        if: ${{ inputs.apply }}
+        working-directory: infra
+        run: >-
+          terraform apply -input=false -auto-approve -lock-timeout=5m
+          -var="resource_group_name=${{ vars.LAB_RESOURCE_GROUP }}"
+          -var='subject_object_ids=${{ vars.SUBJECT_OBJECT_IDS }}'
+
+      - name: Collect outputs
+        if: ${{ inputs.apply }}
+        id: tf
+        working-directory: infra
+        run: |
+          {
+            echo "rg=$(terraform output -raw resource_group_name)"
+            echo "rgid=$(terraform output -raw resource_group_id)"
+            echo "storage=$(terraform output -raw storage_account_name)"
+            echo "subscription=$(terraform output -raw subscription_id)"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "declared<<EOF"
+            terraform output -raw declared_assignments
+            echo ""
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Role assignments are not enforced the instant they are written. Probing
+      # too early reports a denial that is really a timing artefact, which is
+      # the worst possible result for a tool whose entire job is to distinguish
+      # allowed from denied.
+      - name: Wait for role assignments to take effect
+        if: ${{ inputs.apply }}
+        shell: pwsh
+        run: |
+          $scope = '${{ steps.tf.outputs.rgid }}'
+          foreach ($attempt in 1..20) {
+            $live = az role assignment list --scope $scope --include-inherited false --only-show-errors | ConvertFrom-Json
+            if (@($live).Count -ge 3) {
+              Write-Host "All three assignments visible after $($attempt * 15)s or less"
+              # Visible is not the same as enforced; give the data plane a moment.
+              Start-Sleep -Seconds 30
+              exit 0
+            }
+            Start-Sleep -Seconds 15
+          }
+          Write-Host '::error::Role assignments never became visible'
+          exit 1
+
+      # ---------------------------------------------------------------
+      # What Azure currently holds, judged on its own terms
+      # ---------------------------------------------------------------
+      - name: Analyse the live access
+        if: ${{ inputs.apply }}
+        shell: pwsh
+        run: |
+          ./scripts/Invoke-RbacAnalysis.ps1 `
+            -Scope '${{ steps.tf.outputs.rgid }}' `
+            -DeclaredAssignments '${{ steps.tf.outputs.declared }}' `
+            -OutFile out/rbac-analysis.json `
+            -FailOnDrift
+
+      # ---------------------------------------------------------------
+      # What each identity can actually do, by trying it
+      # ---------------------------------------------------------------
+      - name: Prove each identity is refused what it should be refused
+        if: ${{ inputs.apply }}
+        shell: pwsh
+        run: |
+          ./scripts/Invoke-AccessProof.ps1 `
+            -MatrixPath access-matrix.json `
+            -SubjectClientIds '${{ vars.SUBJECT_CLIENT_IDS }}' `
+            -TenantId '${{ vars.AZURE_TENANT_ID }}' `
+            -SubscriptionId '${{ steps.tf.outputs.subscription }}' `
+            -ResourceGroup '${{ steps.tf.outputs.rg }}' `
+            -StorageAccount '${{ steps.tf.outputs.storage }}' `
+            -OutFile out/access-proof.json
+
+      # A proof that leaves credentials behind has made the estate worse. The
+      # script removes each secret in a finally block; this checks it did.
+      - name: Confirm no probe credential survived
+        if: always()
+        shell: pwsh
+        run: |
+          $ids = '${{ vars.SUBJECT_CLIENT_IDS }}'
+          if (-not $ids) { Write-Host 'No subjects configured.'; exit 0 }
+          $leftover = 0
+          foreach ($entry in ($ids | ConvertFrom-Json).PSObject.Properties) {
+            $creds = az ad app credential list --id $entry.Value --only-show-errors | ConvertFrom-Json
+            $probes = @($creds | Where-Object { $_.displayName -like 'proof-*' })
+            if ($probes.Count) {
+              Write-Host "::error::$($probes.Count) probe credential(s) left on $($entry.Name)"
+              $leftover += $probes.Count
+            }
+            else { Write-Host "  $($entry.Name): clean" }
+          }
+          if ($leftover) { exit 1 }
+          Write-Host 'No probe credentials remain.'
+
+      - name: Summary
+        if: always()
+        shell: pwsh
+        run: |
+          "### Least privilege" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          if (Test-Path out/access-proof.json) {
+            $proof = Get-Content out/access-proof.json -Raw | ConvertFrom-Json
+            $analysis = Get-Content out/rbac-analysis.json -Raw | ConvertFrom-Json
+            "| Check | Result |"                                                      | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            "|---|---|"                                                                | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            "| Probes matching policy | $($proof.Summary.AsExpected) |"                | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            "| Unexpectedly allowed | $($proof.Summary.UnexpectedlyAllowed) |"         | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            "| Unexpectedly denied | $($proof.Summary.UnexpectedlyDenied) |"           | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            "| Access matches source control | $($analysis.Drift.InSync) |"            | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            "| Critical escalation paths | $($analysis.Escalation.Critical) |"         | Out-File $env:GITHUB_STEP_SUMMARY -Append
+            "| Identities able to read a secret value | $($analysis.SecretAccess.Count) |" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          }
+          else {
+            "_Planned only; nothing was provisioned._" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          }
+
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: proof
+          path: out/*.json
+          if-no-files-found: warn

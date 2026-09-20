@@ -1,0 +1,102 @@
+name: Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type "destroy" to remove every lab resource.
+        required: true
+  schedule:
+    - cron: "0 7 * * *"
+
+concurrency:
+  group: lpp-infra
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_VERSION: "1.16.3"
+
+jobs:
+  destroy:
+    name: Terraform destroy
+    if: vars.AZURE_CLIENT_ID != '' && (github.event_name == 'schedule' || inputs.confirm == 'destroy')
+    runs-on: ubuntu-latest
+    environment: lab
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Mask identifiers
+        run: |
+          echo "::add-mask::$ARM_CLIENT_ID"
+          echo "::add-mask::$ARM_TENANT_ID"
+          echo "::add-mask::$ARM_SUBSCRIPTION_ID"
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Init
+        working-directory: infra
+        run: >-
+          terraform init -input=false
+          -backend-config="resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP }}"
+          -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}"
+          -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}"
+          -backend-config="key=infra.tfstate"
+
+      - name: Destroy
+        working-directory: infra
+        run: >-
+          terraform destroy -input=false -auto-approve -lock-timeout=5m
+          -var="resource_group_name=${{ vars.LAB_RESOURCE_GROUP }}"
+          -var='subject_object_ids=${{ vars.SUBJECT_OBJECT_IDS }}'
+
+      # A probe credential outliving the run is the one failure here that
+      # would matter after the resources are gone.
+      - name: Remove any probe credential left behind
+        if: always()
+        shell: pwsh
+        run: |
+          $ids = '${{ vars.SUBJECT_CLIENT_IDS }}'
+          if (-not $ids) { exit 0 }
+          foreach ($entry in ($ids | ConvertFrom-Json).PSObject.Properties) {
+            $creds = az ad app credential list --id $entry.Value --only-show-errors | ConvertFrom-Json
+            foreach ($c in @($creds | Where-Object { $_.displayName -like 'proof-*' })) {
+              az ad app credential delete --id $entry.Value --key-id $c.keyId --only-show-errors
+              Write-Host "removed a stale probe credential from $($entry.Name)"
+            }
+          }
+
+      - name: Confirm the resource group is empty
+        if: always()
+        run: |
+          RG="${{ vars.LAB_RESOURCE_GROUP }}"
+          COUNT="$(az resource list --resource-group "$RG" --query "length(@)" -o tsv 2>/dev/null || echo unknown)"
+          {
+            echo "### Teardown"
+            echo ""
+            echo "Resources remaining in \`$RG\`: **$COUNT**"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$COUNT" != "0" ] && [ "$COUNT" != "unknown" ]; then
+            echo "::warning::$COUNT resource(s) still present"
+            az resource list --resource-group "$RG" --query "[].{name:name,type:type}" -o table
+          fi

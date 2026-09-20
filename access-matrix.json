@@ -1,0 +1,112 @@
+{
+  "description": "What each identity may and may not do. This file is the policy; the proof makes Azure agree with it. A change here is a change to who can do what, and shows up in review as one.",
+  "probes": [
+    {
+      "principal": "reader",
+      "probe": "rg-read",
+      "action": "read the resource group",
+      "allowed": true,
+      "why": "Reading is the entire purpose of this identity."
+    },
+    {
+      "principal": "reader",
+      "probe": "storage-read",
+      "action": "read the storage account",
+      "allowed": true,
+      "why": "Properties and configuration, not contents."
+    },
+    {
+      "principal": "reader",
+      "probe": "storage-listkeys",
+      "action": "list storage account keys",
+      "allowed": false,
+      "why": "listKeys is an action, not a read. A Reader that can call it holds the data, and people assume it cannot."
+    },
+    {
+      "principal": "reader",
+      "probe": "tag-write",
+      "action": "write a tag on the resource group",
+      "allowed": false,
+      "why": "The smallest possible write. If this succeeds, the role is not read-only."
+    },
+    {
+      "principal": "reader",
+      "probe": "role-assign",
+      "action": "assign itself a role",
+      "allowed": false,
+      "why": "Any identity that can do this is an administrator regardless of what its role is called."
+    },
+
+    {
+      "principal": "operator",
+      "probe": "rg-read",
+      "action": "read the resource group",
+      "allowed": true,
+      "why": "An operator that cannot see the estate cannot operate it."
+    },
+    {
+      "principal": "operator",
+      "probe": "storage-read",
+      "action": "read the storage account",
+      "allowed": true,
+      "why": "Needed to know what it is looking at."
+    },
+    {
+      "principal": "operator",
+      "probe": "storage-listkeys",
+      "action": "list storage account keys",
+      "allowed": false,
+      "why": "Restarting a service never requires its data keys."
+    },
+    {
+      "principal": "operator",
+      "probe": "tag-write",
+      "action": "write a tag on the resource group",
+      "allowed": false,
+      "why": "Restart is an action on a running thing, not permission to change it."
+    },
+    {
+      "principal": "operator",
+      "probe": "role-assign",
+      "action": "assign itself a role",
+      "allowed": false,
+      "why": "Same as every other identity here."
+    },
+
+    {
+      "principal": "deployer",
+      "probe": "rg-read",
+      "action": "read the resource group",
+      "allowed": true,
+      "why": "Contributor."
+    },
+    {
+      "principal": "deployer",
+      "probe": "storage-read",
+      "action": "read the storage account",
+      "allowed": true,
+      "why": "Contributor."
+    },
+    {
+      "principal": "deployer",
+      "probe": "storage-listkeys",
+      "action": "list storage account keys",
+      "allowed": true,
+      "why": "Contributor genuinely can, which is worth knowing rather than assuming it cannot."
+    },
+    {
+      "principal": "deployer",
+      "probe": "tag-write",
+      "action": "write a tag on the resource group",
+      "allowed": true,
+      "why": "Building infrastructure is what this identity is for."
+    },
+    {
+      "principal": "deployer",
+      "probe": "role-assign",
+      "action": "assign itself a role",
+      "allowed": false,
+      "why": "The boundary that matters. Contributor is widely treated as safe because it cannot grant access, and this is the assertion that keeps that true."
+    }
+  ]
+}
