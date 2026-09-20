@@ -166,27 +166,21 @@ jobs:
             -StorageAccount '${{ steps.tf.outputs.storage }}' `
             -OutFile out/access-proof.json
 
-      # The proof creates no credential, so the honest check is not "was the
-      # secret cleaned up" but "does any secret exist on these identities at
-      # all". A password appearing here means somebody added one by hand.
-      - name: Confirm the identities under test hold no secret
-        if: always()
-        shell: pwsh
-        run: |
-          $ids = '${{ vars.SUBJECT_CLIENT_IDS }}'
-          if (-not $ids) { Write-Host 'No subjects configured.'; exit 0 }
-          $leftover = 0
-          foreach ($entry in ($ids | ConvertFrom-Json).PSObject.Properties) {
-            $creds = az ad app credential list --id $entry.Value --only-show-errors | ConvertFrom-Json
-            if (@($creds).Count) {
-              Write-Host "::error::$(@($creds).Count) password credential(s) exist on $($entry.Name); this lab creates none"
-              $leftover += @($creds).Count
-            }
-            else { Write-Host "  $($entry.Name): no password credentials" }
-          }
-          if ($leftover) { exit 1 }
-          Write-Host 'No identity under test holds a password credential.'
-
+      # There is deliberately no step here auditing the identities under test
+      # for stray credentials.
+      #
+      # The first version of this check ran `az ad app credential list` as the
+      # deploy identity, which has no Graph rights over those applications.
+      # The command failed with "insufficient privileges" and the check read
+      # the empty result as "no credentials found" — reporting clean from a
+      # query that never ran. That is worse than no check.
+      #
+      # Granting the rights to make the check real would mean giving the
+      # pipeline directory permissions over three applications purely to audit
+      # them, which is the trade this lab exists to argue against. The
+      # guarantee instead comes from the design: no credential is ever created,
+      # because every identity is reached by exchanging the run's own OIDC
+      # token. There is nothing to leave behind.
       - name: Summary
         if: always()
         shell: pwsh
