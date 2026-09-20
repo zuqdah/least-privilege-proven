@@ -25,6 +25,9 @@
 param(
     [Parameter(Mandatory)][string]$MatrixPath,
     [Parameter(Mandatory)][string]$SubjectClientIds,
+    # The workflow's own OIDC token. Exchanged for each subject rather than
+    # creating a credential for any of them.
+    [Parameter(Mandatory)][string]$FederatedToken,
     [Parameter(Mandatory)][string]$TenantId,
     [Parameter(Mandatory)][string]$SubscriptionId,
     [Parameter(Mandatory)][string]$ResourceGroup,
@@ -101,50 +104,37 @@ foreach ($principal in $principals) {
     if (-not $clientId) { throw "No client id supplied for subject '$principal'." }
 
     $configDir = Join-Path ([System.IO.Path]::GetTempPath()) "azcfg-$principal-$PID"
-    $keyId = $null
 
     Write-Host ""
     Write-Host "Signing in as $principal"
 
     try {
-        # Short-lived and append-only: an existing credential on the
-        # application is not disturbed, and this one is removed below.
-        $end = [DateTime]::UtcNow.AddHours(2).ToString('yyyy-MM-ddTHH:mm:ssZ')
-        $resetRaw = az ad app credential reset --id $clientId --append `
-            --display-name "proof-$PID" --end-date $end --only-show-errors 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "Could not mint a credential for ${principal}: $($resetRaw -join ' ')"
-        }
-        $credential = $resetRaw | ConvertFrom-Json
-        if (-not $credential.password) {
-            throw "Credential reset for $principal returned no password."
-        }
-        $keyId = $credential.keyId
-
-        $objectId = az ad sp show --id $clientId --query id -o tsv --only-show-errors
-
-        # A freshly minted secret is not always usable immediately; Entra can
-        # take a couple of minutes to replicate it. The last error is kept so
-        # a real failure is distinguishable from a slow one, because a retry
-        # loop that hides why it is retrying is no help at all.
+        # No secret is created. The run already holds a GitHub OIDC token, and
+        # each subject trusts the same repository and environment, so the token
+        # is exchanged directly for each identity. Nothing needs cleaning up
+        # afterwards because nothing was minted.
         $signedIn = $false
         $lastError = ''
-        foreach ($attempt in 1..20) {
+        foreach ($attempt in 1..10) {
             $env:AZURE_CONFIG_DIR = $configDir
-            $loginOut = az login --service-principal -u $clientId -p $credential.password `
-                --tenant $TenantId --allow-no-subscriptions --only-show-errors 2>&1
+            $loginOut = az login --service-principal -u $clientId `
+                --tenant $TenantId --federated-token $FederatedToken `
+                --allow-no-subscriptions --only-show-errors 2>&1
             if ($LASTEXITCODE -eq 0) {
                 $signedIn = $true
                 if ($attempt -gt 1) { Write-Host "  signed in on attempt $attempt" }
                 break
             }
+            # A federated credential added moments ago can take a little while
+            # to be honoured, so a first refusal is not necessarily a real one.
             $lastError = ($loginOut | Out-String).Trim()
             Start-Sleep -Seconds 10
         }
         if (-not $signedIn) {
-            throw "Could not sign in as $principal after 20 attempts over ~200s. Last error: $lastError"
+            throw "Could not sign in as $principal after 10 attempts. Last error: $lastError"
         }
 
+        $objectId = az ad sp show --id $clientId --query id -o tsv --only-show-errors
         az account set --subscription $SubscriptionId --only-show-errors *> $null
 
         foreach ($probe in @($matrix.probes | Where-Object principal -eq $principal)) {
@@ -165,12 +155,7 @@ foreach ($principal in $principals) {
         az logout --only-show-errors *> $null
         $env:AZURE_CONFIG_DIR = $null
 
-        # The secret goes whether or not the probes passed. A proof that
-        # leaves credentials behind has made the estate worse.
-        if ($keyId) {
-            az ad app credential delete --id $clientId --key-id $keyId --only-show-errors *> $null
-            Write-Host "  secret removed"
-        }
+
         if (Test-Path $configDir) { Remove-Item $configDir -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }

@@ -146,18 +146,30 @@ jobs:
         if: ${{ inputs.apply }}
         shell: pwsh
         run: |
+          # The run already has an OIDC token; every subject trusts the same
+          # repository and environment, so it is exchanged for each of them
+          # rather than minting a credential for any.
+          $url = "$env:ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange"
+          $oidc = (Invoke-RestMethod -Uri $url -Headers @{
+              Authorization = "Bearer $env:ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          }).value
+          if (-not $oidc) { throw 'No OIDC token was issued to this job.' }
+          Write-Host "::add-mask::$oidc"
+
           ./scripts/Invoke-AccessProof.ps1 `
             -MatrixPath access-matrix.json `
             -SubjectClientIds '${{ vars.SUBJECT_CLIENT_IDS }}' `
+            -FederatedToken $oidc `
             -TenantId '${{ vars.AZURE_TENANT_ID }}' `
             -SubscriptionId '${{ steps.tf.outputs.subscription }}' `
             -ResourceGroup '${{ steps.tf.outputs.rg }}' `
             -StorageAccount '${{ steps.tf.outputs.storage }}' `
             -OutFile out/access-proof.json
 
-      # A proof that leaves credentials behind has made the estate worse. The
-      # script removes each secret in a finally block; this checks it did.
-      - name: Confirm no probe credential survived
+      # The proof creates no credential, so the honest check is not "was the
+      # secret cleaned up" but "does any secret exist on these identities at
+      # all". A password appearing here means somebody added one by hand.
+      - name: Confirm the identities under test hold no secret
         if: always()
         shell: pwsh
         run: |
@@ -166,15 +178,14 @@ jobs:
           $leftover = 0
           foreach ($entry in ($ids | ConvertFrom-Json).PSObject.Properties) {
             $creds = az ad app credential list --id $entry.Value --only-show-errors | ConvertFrom-Json
-            $probes = @($creds | Where-Object { $_.displayName -like 'proof-*' })
-            if ($probes.Count) {
-              Write-Host "::error::$($probes.Count) probe credential(s) left on $($entry.Name)"
-              $leftover += $probes.Count
+            if (@($creds).Count) {
+              Write-Host "::error::$(@($creds).Count) password credential(s) exist on $($entry.Name); this lab creates none"
+              $leftover += @($creds).Count
             }
-            else { Write-Host "  $($entry.Name): clean" }
+            else { Write-Host "  $($entry.Name): no password credentials" }
           }
           if ($leftover) { exit 1 }
-          Write-Host 'No probe credentials remain.'
+          Write-Host 'No identity under test holds a password credential.'
 
       - name: Summary
         if: always()

@@ -121,6 +121,26 @@ resource "azuread_service_principal" "subject" {
   owners    = [azuread_service_principal.deployer.object_id]
 }
 
+# Each subject federates to the same workflow, so the proof signs in as them
+# with the run's own OIDC token and never creates a credential at all.
+#
+# The alternative was minting a short-lived secret per run, which needed the
+# deploy identity to hold Application.ReadWrite.OwnedBy across the directory.
+# Being an application owner is not enough for a service principal to reset a
+# credential, and taking a directory-wide grant to prove least privilege
+# would have been a poor trade. No secret is a better answer than a
+# short-lived one.
+resource "azuread_application_federated_identity_credential" "subject" {
+  #checkov:skip=CKV_AZURE_249:The subject is deliberately the immutable ID form; the checked pattern expects the name form.
+  for_each = local.subjects
+
+  application_id = azuread_application.subject[each.key].id
+  display_name   = "github-environment-${var.github_environment}"
+  audiences      = ["api://AzureADTokenExchange"]
+  issuer         = "https://token.actions.githubusercontent.com"
+  subject        = local.subject_environment
+}
+
 # ---------------------------------------------------------------------------
 # Deploy identity permissions: one resource group, its state, and the right to
 # assign roles within that group. The proof then checks that the subjects

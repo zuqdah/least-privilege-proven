@@ -73,22 +73,6 @@ jobs:
           -var="custom_role_name=${{ vars.CUSTOM_ROLE_NAME }}"
           -var="deployer_object_id=${{ vars.DEPLOYER_OBJECT_ID }}"
 
-      # A probe credential outliving the run is the one failure here that
-      # would matter after the resources are gone.
-      - name: Remove any probe credential left behind
-        if: always()
-        shell: pwsh
-        run: |
-          $ids = '${{ vars.SUBJECT_CLIENT_IDS }}'
-          if (-not $ids) { exit 0 }
-          foreach ($entry in ($ids | ConvertFrom-Json).PSObject.Properties) {
-            $creds = az ad app credential list --id $entry.Value --only-show-errors | ConvertFrom-Json
-            foreach ($c in @($creds | Where-Object { $_.displayName -like 'proof-*' })) {
-              az ad app credential delete --id $entry.Value --key-id $c.keyId --only-show-errors
-              Write-Host "removed a stale probe credential from $($entry.Name)"
-            }
-          }
-
       - name: Confirm the resource group is empty
         if: always()
         run: |
